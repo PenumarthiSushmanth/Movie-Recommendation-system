@@ -1,0 +1,780 @@
+```         
+<!--
+DPA Project - Movie Recommendation System  
+
+Group members:
+--------------
+Mohana uma sushmanth Penumarthi - A20525576
+Vinnapala Sai Ramya - A20526253
+Harini Vaidya - A20525926
+-->
+```
+
+## Importing Libraries
+
+```{r}
+library(zoo)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(caret)
+library(FNN)
+library(rpart)
+library(ROCR)
+library(class)
+```
+
+## Importing Dataset
+
+```{r}
+# Loading movies dataset
+movies_dataset <- read.table("title.basics.tsv", 
+                   header = TRUE, 
+                   sep = "\t", 
+                   quote = "", 
+                   na.strings = "\\N", 
+                   stringsAsFactors = FALSE,
+                   fill = TRUE)
+
+```
+
+```{r}
+head(movies_dataset)
+```
+
+```{r}
+# Summary Statistics of movies dataset
+summary(movies_dataset)
+```
+
+```{r}
+# Structure of the movies dataset
+str(movies_dataset)
+```
+
+```{r}
+# Loading ratings dataset
+ratings_dataset <- read.table("title.ratings.tsv", header = TRUE, fill = TRUE)
+
+```
+
+```{r}
+head(ratings_dataset)
+```
+
+```{r}
+# Summary Statistics of ratings dataset
+summary(ratings_dataset)
+```
+
+```{r}
+# Structure of the ratings dataset
+str(ratings_dataset)
+```
+
+### Droping unnecessary columns
+
+```{r}
+final_movies_dataset <- subset(movies_dataset, select = -c(primaryTitle, originalTitle, endYear))
+head(final_movies_dataset)
+```
+
+### Merging two datasets
+
+```{r}
+final_dataset <- merge(final_movies_dataset, ratings_dataset, by = "tconst", all.x = TRUE)
+```
+
+```{r}
+head(final_dataset)
+```
+
+### Handling null values
+
+```{r}
+null_counts <- sapply(final_dataset, function(x) sum(is.na(x)))
+print(null_counts)
+```
+
+### Null values in isAdult
+
+```{r}
+#Considering those null values as not adult movies
+final_dataset$isAdult <- ifelse(is.na(final_dataset$isAdult), 0, final_dataset$isAdult)
+```
+
+### Null values in startYear
+
+```{r}
+#Filling the null values in startYear field with the previous non-null entry value. Considering the movie is relased in same year 
+final_dataset$startYear <- na.locf(final_dataset$startYear)
+```
+
+### Null values in runtimeMinutes
+
+```{r}
+# Remove rows with missing runtime values
+temp_ds <- final_dataset[!is.na(final_dataset$runtimeMinutes), ]
+
+# Calculate average runtime for each title type
+average_runtime <- tapply(temp_ds$runtimeMinutes, temp_ds$titleType, mean)
+
+# Convert average runtime to integer
+average_runtime <- round(average_runtime)
+
+# Replacing null values with the average value of corresponding titletype
+
+for(tt in unique(final_dataset$titleType)) {
+  null_indices <- is.na(final_dataset$runtimeMinutes) & final_dataset$titleType == tt
+  final_dataset$runtimeMinutes[null_indices] <- average_runtime[tt]
+}
+
+
+```
+
+```{r}
+# Check for null values in the runtimeMinutes column
+null_indices <- which(is.na(final_dataset$runtimeMinutes))
+
+# Print rows with null values in the runtimeMinutes column
+print(final_dataset[null_indices, ])
+```
+
+```{r}
+unique_runtimes <- unique(final_dataset$titleType)
+# Print the unique values
+print(unique_runtimes)
+```
+
+```{r}
+final_dataset <- final_dataset[final_dataset$titleType != "tvPilot", ]
+```
+
+### Null values in AverageRating and nuumVotes
+
+```{r}
+# Remove rows with null values in the averageRating column
+final_dataset <- final_dataset[complete.cases(final_dataset$averageRating), ]
+```
+
+### Null values in Genres
+
+```{r}
+# Replacing null values with other in the genres column
+final_dataset$genres[is.na(final_dataset$genres)] <- 'other,'
+```
+
+```{r}
+null_counts <- sapply(final_dataset, function(x) sum(is.na(x)))
+print(null_counts)
+```
+
+```{r}
+num_rows <- nrow(final_dataset)
+
+# Print the number of rows
+print(num_rows)
+```
+
+## Data Exploration
+
+```{r}
+# Unique values of feature titleType
+distinct_title_types <- unique(final_dataset$titleType)
+print(distinct_title_types)
+```
+
+```{r}
+# Count the occurrences of each value in the titleType column
+title_type_counts <- as.data.frame(table(final_dataset$titleType))
+
+print(title_type_counts)
+
+# Plot the graph using ggplot2
+ggplot(title_type_counts, aes(x = Var1, y = Freq)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(title = "Count of Each Title Type",
+       x = "Title Type",
+       y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+**Most of the movies belongs to tvEpisodes**
+
+```{r}
+# Unique values of feature titleType
+is_adult_counts <- as.data.frame(table(final_dataset$isAdult))
+
+print(is_adult_counts)
+
+# Plot the graph using ggplot2
+ggplot(is_adult_counts, aes(x = factor(Var1), y = Freq)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(title = "Count of Each Value in isAdult Column",
+       x = "isAdult",
+       y = "Count") +
+  scale_x_discrete(labels = c("Non-Adult", "Adult")) + theme_minimal()
+```
+
+```{r}
+# Split the strings in the genres column by comma and convert to list
+final_dataset$genres <- strsplit(final_dataset$genres, ",")
+```
+
+```{r}
+head(final_dataset)
+```
+
+### Number of movies in each genre
+
+```{r}
+# Unnest the genres column to create separate rows for each genre
+unnested_gendata <- final_dataset %>%
+  unnest(genres)
+
+# Count the number of movies in each genre
+genre_counts <- unnested_gendata %>%
+  group_by(genres) %>%
+  summarise(num_movies = n()) %>%
+  arrange(desc(num_movies))
+
+print(genre_counts)
+
+# Plot the graph
+ggplot(genre_counts, aes(x = reorder(genres, -num_movies), y = num_movies)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(title = "Number of Movies in Each Genre",
+       x = "Genre",
+       y = "Number of Movies") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
+```
+
+**Most of the movies given in the dataset are belongs to Drama genre (429382) and least number of movies are Film-Noir (880)**
+
+### Average ratings for each genres
+
+```{r}
+
+# Group by genre and calculate the average rating
+average_ratings_by_genre <- unnested_gendata %>%
+  group_by(genres) %>%
+  summarise(average_rating = mean(averageRating, na.rm = TRUE)) %>%
+  arrange(desc(average_rating))
+
+# Print the top-rated genres
+print(average_ratings_by_genre)
+
+# Plot the graph
+ggplot(average_ratings_by_genre, aes(x = reorder(genres, -average_rating), y = average_rating)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(title = "Average Rating by Genre",
+       x = "Genre",
+       y = "Average Rating") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**Here, the average rating for all the genres is around 6 to 7** **Movies belongs to History genre got highest average rating (7.289976) and movies belongs to Horror genre got least average rating (6.080079)**
+
+### Distribution of average ratings across all movies
+
+```{r}
+# Plot histogram of average ratings to distribution of average ratings across all movies
+ggplot(final_dataset, aes(x = averageRating)) +
+  geom_histogram(binwidth = 0.1, fill = "red", color = "black") +
+  labs(title = "Distribution of Average Ratings Across All Movies",
+       x = "Average Rating",
+       y = "Frequency") +
+  theme_minimal()
+```
+
+**Here, most of the movies are rated around 7.5**
+
+### Checking outliers for the averageRating feature
+
+```{r}
+# Plot a boxplot for the averageRating feature
+boxplot(final_dataset$averageRating, 
+        main = "Boxplot of averageRating",
+        ylab = "Average Rating",
+        col = "red",
+        border = "black",
+        horizontal = TRUE)
+
+```
+
+**There are very less amount of outliers. Most of the ratings in between 6 to 8**
+
+#### Average Runtime for each genres
+
+```{r}
+# Group by genre and calculate the average runtime
+average_runtime_by_genre <- unnested_gendata %>%
+  group_by(genres) %>%
+  summarise(average_runtime = mean(runtimeMinutes, na.rm = TRUE)) %>%
+  arrange(desc(average_runtime))
+
+print(average_runtime_by_genre)
+
+# Plot graph
+ggplot(average_runtime_by_genre, aes(x = reorder(genres, -average_runtime), y = average_runtime)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(title = "Average Runtime for Each Genre",
+       x = "Genre",
+       y = "Average Runtime (minutes)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5)) 
+  
+```
+
+**Longest average rumtime movies are belongs to Adult genre (92.60358 mins) and shortest average rumtime movies are belongs to short genre (15.66562 mins)**
+
+### Which genres receive the highest number of votes on average?
+
+```{r}
+# Group by genre and calculate the average number of votes
+average_votes_by_genre <- unnested_gendata %>%
+  group_by(genres) %>%
+  summarise(average_votes = mean(numVotes))
+
+# Arrange in descending order based on the average number of votes
+average_votes_by_genre <- average_votes_by_genre %>%
+  arrange(desc(average_votes))
+
+average_votes_by_genre$average_votes = round(average_votes_by_genre$average_votes)
+# Print the result
+print(average_votes_by_genre)
+
+# Plot a graph
+ggplot(average_votes_by_genre, aes(x = reorder(genres, -average_votes), y = average_votes)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(title = "Average Number of Votes by Genre",
+       x = "Genres",
+       y = "Average Number of Votes") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
+```
+
+**On average, Sci-Fi genre recieved highest number of votes (4610) and other genre recieved lowest number of votes (27).**
+
+### what kind of movies are most produced in yearly based
+
+```{r}
+# Unnest the genres column to create separate rows for each genre
+unnested_data <- final_dataset %>%
+  unnest(genres)
+
+# Group by startYear and genre, then count the occurrences
+genre_counts <- unnested_data %>%
+  group_by(startYear, genres, .drop = FALSE) %>%
+  summarise(count = n(), .groups = "keep")
+
+# Find the most produced genre for each year
+most_produced_genre <- genre_counts %>%
+  group_by(startYear) %>%
+  slice(which.max(count)) %>%
+  ungroup()
+
+# Print the result
+print(most_produced_genre)
+
+```
+
+**These are the genres that are most produced in each year**
+
+### what kind of movies are most classified as adult content
+
+```{r}
+# Count the occurrences of adult content for each genre
+adult_genre_counts <- final_dataset %>%
+  filter(isAdult == 1) %>%
+  unnest(genres) %>%
+  group_by(genres) %>%
+  summarise(num_adult_movies = n()) %>%
+  arrange(desc(num_adult_movies))
+
+# Print the result
+print(adult_genre_counts)
+```
+
+**Most classified movies as adult content are belongs to Adult genre**
+
+### Top-rated movies interms of avg rating & Numvotes
+
+```{r}
+# Rank movies based on average rating and numVotes
+top_rated_movies <- final_dataset %>%
+  arrange(desc(averageRating), desc(numVotes)) %>%
+  slice(1:10)  # Select the top 10 movies
+
+# Print the top-rated movies
+head(top_rated_movies)
+```
+
+### Correlation between runtime and average ratings
+
+```{r}
+# Calculate correlation between runtime and average ratings
+correlation <- cor(final_dataset$runtimeMinutes, final_dataset$averageRating)
+
+# Print correlation
+print(correlation)
+
+# Plot correlation graph
+ggplot(final_dataset, aes(x = runtimeMinutes, y = averageRating)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Correlation between Runtime and Average Ratings",
+       x = "Runtime (minutes)",
+       y = "Average Rating") +
+  theme_minimal()
+```
+
+**The features runtimeMinutes and averageRating are negatively corelated**
+
+### Correlation between average rating and numVotes
+
+```{r}
+# Calculate correlation between average rating and numVotes
+correlation <- cor(final_dataset$averageRating, final_dataset$numVotes)
+
+# Print correlation
+print(correlation)
+
+# Plot correlation graph
+ggplot(final_dataset, aes(x = averageRating, y = numVotes)) +
+  geom_point() +
+  labs(title = "Correlation between Average Rating and NumVotes",
+       x = "Average Rating",
+       y = "NumVotes") +
+  theme_minimal()
+```
+
+**The features numVotes and averageRating are positively corelated**
+
+## Data preparation
+
+```{r}
+head(final_dataset)
+```
+
+**Converting all feature to integer datatype. Lets do feature encoding...**
+
+```{r}
+# Convert titleType to integer using factor
+final_dataset$titleType <- as.integer(factor(final_dataset$titleType))
+
+```
+
+```{r}
+# Unnest the genres column to create a vector of all genres
+all_genres <- unlist(final_dataset$genres)
+
+# Get unique values of genres
+unique_genres <- unique(all_genres)
+
+# Print unique genres
+print(unique_genres)
+
+```
+
+```{r}
+# Define a function to map genres to integers
+genre_to_integer <- function(genre_list) {
+  # Define a mapping of genres to integers
+  genre_mapping <- c("Action" = 1, "Adventure" = 2, "Animation" = 3, "Biography" = 4, 
+                     "Comedy" = 5, "Crime" = 6, "Documentary" = 7, "Drama" = 8, 
+                     "Family" = 9, "Fantasy" = 10, "Film-Noir" = 11, "Game-Show" = 12, 
+                     "History" = 13, "Horror" = 14, "Music" = 15, "Musical" = 16, 
+                     "Mystery" = 17, "News" = 18, "Reality-TV" = 19, "Romance" = 20, 
+                     "Sci-Fi" = 21, "Sport" = 22, "Talk-Show" = 23, "Thriller" = 24, 
+                     "War" = 25, "Western" = 26, "Adult" = 27,  "Short" = 28, "other" = 29)
+  
+  # Map each genre to its corresponding integer value
+  integer_list <- sapply(genre_list, function(genre) genre_mapping[genre])
+  
+  return(integer_list)
+}
+
+# Perform feature encoding on the genre feature
+final_dataset$genres <- lapply(final_dataset$genre, genre_to_integer)
+
+```
+
+```{r}
+first_genre <- sapply(final_dataset$genre, function(x) ifelse(length(x) > 0, x[1], 29))
+
+# Convert to factors for creating dummy variables
+first_genre <- as.factor(first_genre)
+
+temp <- final_dataset
+
+final_dataset$genres <- as.integer(first_genre)
+
+```
+
+```{r}
+head(final_dataset)
+```
+
+```{r}
+unique_genres <- unique(final_dataset$genres)
+
+print(unique_genres)
+```
+
+**Let's save a copy of dataset for reccomendations**
+
+```{r}
+reccon_dataset <- final_dataset
+```
+
+```{r}
+head(reccon_dataset)
+```
+
+**Here we don't require the "tconst" feature. So lets drop it.**
+
+```{r}
+# Drop tconst column using subset()
+final_dataset <- subset(final_dataset, select = -tconst)
+```
+
+```{r}
+head(final_dataset)
+```
+
+**Now the data is ready for model development stage**
+
+## Model development
+
+```{r}
+# Set the seed for reproducibility
+set.seed(42)
+
+# Determine the number of rows for the training set (80%)
+train_size <- 0.8
+
+# Create an index vector for partitioning the data
+train_indices <- createDataPartition(final_dataset$averageRating, p = train_size, list = FALSE)
+
+# Create the training and testing sets
+training_data <- final_dataset[train_indices, ]
+testing_data <- final_dataset[-train_indices, ]
+
+```
+
+```{r}
+
+print(nrow(training_data))
+print(nrow(testing_data))
+
+```
+
+```{r}
+x_train <- training_data[, !names(training_data) %in% c("averageRating")]
+y_train <- training_data$averageRating
+
+x_test <- testing_data[, !names(training_data) %in% c("averageRating")]
+y_test <- testing_data$averageRating
+
+```
+
+```{r}
+head(x_train)
+```
+
+```{r}
+head(y_train)
+```
+
+```{r}
+head(x_test)
+```
+
+```{r}
+head(y_test)
+
+```
+
+### Linear regression model
+
+```{r}
+# Build the multiple linear regression model using training data
+lm_model <- lm(averageRating ~ ., data = training_data)
+```
+
+```{r}
+# Predict y values using the model
+lm_y_pred <- predict(lm_model, newdata = testing_data)
+```
+
+```{r}
+plot(y_test, lm_y_pred,
+     xlab = "Actual y_test", ylab = "Predicted y_test",
+     main = "Actual vs. Predicted y_test",
+     ylim = c(0, 10))
+abline(0, 1, col = "red")
+```
+
+```{r}
+summary(lm_model)
+```
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+MAE <- mean(abs(lm_y_pred - y_test))
+cat("Mean Absolute Error (MAE):", MAE, "\n")
+
+# Calculate Mean Squared Error (MSE)
+MSE <- mean((lm_y_pred - y_test)^2)
+cat("Mean Squared Error (MSE):", MSE, "\n")
+
+# Calculate Root Mean Squared Error (RMSE)
+RMSE <- sqrt(MSE)
+cat("Root Mean Squared Error (RMSE):", RMSE, "\n")
+
+# Calculate R-squared
+SS_res <- sum((lm_y_pred - y_test)^2)
+SS_tot <- sum((y_test - mean(y_test))^2)
+R_squared <- 1 - (SS_res / SS_tot)
+cat("R-squared:", R_squared, "\n")
+
+```
+
+### KNN regression model
+
+```{r}
+# Build the KNN model using training data
+knn_final_model <- knn.reg(train = x_train, test = x_test, y = y_train, k = 10)  # Adjust the value of k as needed
+```
+
+```{r}
+# Predict average ratings for testing data
+knn_pred_ratings <- knn_final_model$pred
+
+# Print the predicted ratings
+head(knn_pred_ratings)
+```
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+MAE <- mean(abs(knn_pred_ratings - y_test))
+cat("Mean Absolute Error (MAE):", MAE, "\n")
+
+# Calculate Mean Squared Error (MSE)
+MSE <- mean((knn_pred_ratings - y_test)^2)
+cat("Mean Squared Error (MSE):", MSE, "\n")
+
+# Calculate Root Mean Squared Error (RMSE)
+RMSE <- sqrt(MSE)
+cat("Root Mean Squared Error (RMSE):", RMSE, "\n")
+
+# Calculate R-squared
+SS_res <- sum((knn_pred_ratings - y_test)^2)
+SS_tot <- sum((y_test - mean(y_test))^2)
+R_squared <- 1 - (SS_res / SS_tot)
+cat("R-squared:", R_squared, "\n")
+```
+
+```{r}
+# Define a function to calculate RMSE for KNN regression
+knn_rmse <- function(k, train_data, test_data) {
+  
+  # Train KNN regression model
+  knn_model <- knn.reg(train = x_train, test = x_test, y = y_train, k = k)
+  
+  # Predict on test data
+  predictions <- knn_model$pred
+  
+  cat("For the k = ", k, "\n")
+  # Calculate Root Mean Squared Error (RMSE)
+  RMSE <- sqrt(mean((predictions - y_test)^2))
+  cat("Root Mean Squared Error (RMSE):", RMSE, "\n")
+  print("-------------------------------------")
+  
+  return(RMSE)
+}
+
+
+# Perform grid search to find the best k value
+k_values <- 1:20 
+rmse_values <- sapply(k_values, function(k) knn_rmse(k, training_data, testing_data))
+
+# Plot RMSE values for different k values
+plot(k_values, rmse_values, type = "b", xlab = "k", ylab = "RMSE", main = "RMSE vs. k for KNN Regression")
+
+```
+
+**Selecting an optimal value for k in KNN is crucial for achieving the right balance between bias and variance. Lower values of k may lead to overfitting, capturing noise in the data, while higher values of k may result in underfitting, oversimplifying the model. After evaluating the model's performance for various k values, we observed that the RMSE values plateaued after k = 10. This indicates that increasing the value of k beyond 10 does not significantly improve the model's performance. It suggests that the model starts to overfit the data beyond k = 10. Therefore, based on this analysis, we have chosen k = 10 as the optimal value for our KNN model. This value strikes a balance between capturing the underlying patterns in the data and avoiding overfitting.**
+
+### Decision Tree
+
+```{r}
+# Build the decision tree model using training data
+tree_model <- rpart(formula = y_train ~ ., data = x_train)
+
+```
+
+```{r}
+# Predict average ratings for testing data
+tree_pred_ratings <- predict(tree_model, newdata = x_test)
+
+# Print the predicted ratings
+head(tree_pred_ratings)
+```
+
+```{r}
+summary(tree_model)
+```
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+MAE <- mean(abs(tree_pred_ratings - y_test))
+cat("Mean Absolute Error (MAE):", MAE, "\n")
+
+# Calculate Mean Squared Error (MSE)
+MSE <- mean((tree_pred_ratings - y_test)^2)
+cat("Mean Squared Error (MSE):", MSE, "\n")
+
+# Calculate Root Mean Squared Error (RMSE)
+RMSE <- sqrt(MSE)
+cat("Root Mean Squared Error (RMSE):", RMSE, "\n")
+
+# Calculate R-squared
+SS_res <- sum((tree_pred_ratings - y_test)^2)
+SS_tot <- sum((y_test - mean(y_test))^2)
+R_squared <- 1 - (SS_res / SS_tot)
+cat("R-squared:", R_squared, "\n")
+```
+
+**Based on these metrics, the KNN Regression Model appears to perform the best among the three models.**
+
+## Reccomendations - Top 10 Reccomended movies
+
+**Let's apply the KNN regression model on total dataset and predit the ratings. Based on these ratings, reccommend the top rated movies**
+
+```{r}
+# Join reccon_dataset and movie_dataset using tconst as the key to get the originalTitle feature from movie_dataset
+merged_dataset <- merge(reccon_dataset, movies_dataset[, c("tconst", "originalTitle")], by = "tconst", all.x = TRUE)
+#Considering whole dataset as a testing dataset
+new_test_dataset <- subset(merged_dataset, select = c(titleType, isAdult,startYear, runtimeMinutes, genres, numVotes))
+
+
+# Building knn regression model
+knn_recc_model <- knn.reg(train = x_train, test = new_test_dataset, y = y_train, k = 10)
+# Predict average ratings for testing data
+knn_recc_predratings <- knn_recc_model$pred
+
+
+# Attach predicted ratings to the dataset
+merged_dataset$predicted_ratings <- knn_recc_predratings
+# Sort entries by predicted_ratings in descending order
+merged_dataset <- merged_dataset[order(merged_dataset$predicted_ratings, decreasing = TRUE), ]
+print(merged_dataset[1:10, c("originalTitle", "predicted_ratings")])
+```
+
+**Here are the top 10 reccomended movie by the KNN regression model.**
